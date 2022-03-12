@@ -6,6 +6,11 @@ const cursor = @import("cursor.zig");
 
 const ComptimeStringMap = std.ComptimeStringMap;
 
+// Reference:
+// https://en.wikipedia.org/wiki/ANSI_escape_code#Terminal_input_sequences
+// https://gitlab.redox-os.org/redox-os/termion/-/blob/8054e082b01c3f45f89f0db96bc374f1e378deb1/src/event.rs
+// https://gitlab.redox-os.org/redox-os/termion/-/blob/8054e082b01c3f45f89f0db96bc374f1e378deb1/src/input.rs
+
 const KeyMap = ComptimeStringMap(Key, .{
     .{ "\x01", .ctrlA },
     .{ "\x02", .ctrlB },
@@ -133,15 +138,14 @@ pub fn next(in: anytype) !Event {
 fn parse_csi(buf: []const u8) !Event {
     // Cursor position report
     if (buf[buf.len - 1] == 'R') {
-        var y_offset: usize = 2;
-        y_offset += try read_until(buf[2..], ';');
-
-        var x_offset: usize = y_offset + 1;
-        x_offset += try read_until(buf[2 + y_offset ..], 'R');
+        var row_offset: usize = 2;
+        var row_length = try read_until(buf[row_offset..], ';');
+        var col_offset = row_offset + row_length + 1;
+        var col_length = try read_until(buf[col_offset..], 'R');
 
         return Event{ .key = .{ .cursor = .{
-            .x = try std.fmt.parseInt(i16, buf[y_offset + 1 .. x_offset], 10),
-            .y = try std.fmt.parseInt(i16, buf[2..y_offset], 10),
+            .x = try std.fmt.parseInt(i16, buf[col_offset .. col_offset + col_length], 10),
+            .y = try std.fmt.parseInt(i16, buf[row_offset .. row_offset + row_length], 10),
         } } };
     }
 
@@ -195,18 +199,49 @@ pub const Event = union(enum) {
     none,
 };
 
-test "next" {
-    const term = @import("main.zig").term;
-    const stdin = io.getStdIn();
+fn test_event_equal(bytes: []const u8, expected: Event) !void {
+    var stream = std.io.fixedBufferStream(bytes);
+    var event = try next(stream.reader());
+    try std.testing.expectEqual(expected, event);
+}
 
-    var raw = try term.RawTerm.enableRawMode(stdin.handle, .blocking);
-    defer raw.disableRawMode() catch {};
+test "ctrl keys" {
+    try test_event_equal("\x03", Event{ .key = Key.ctrlC });
+    try test_event_equal("\x0a", Event{ .key = Key.ctrlJ }); // aka newline
+    try test_event_equal("\x0d", Event{ .key = Key.ctrlM }); // aka carriage return
+    try test_event_equal("\x1b", Event{ .key = Key.escape });
+}
 
-    try io.getStdOut().writer().print("{s}", .{cursor.getPos()});
+test "low function keys" {
+    try test_event_equal("\x1bOP", Event{ .key = Key{ .fun = 1 } });
+    try test_event_equal("\x1bOQ", Event{ .key = Key{ .fun = 2 } });
+    try test_event_equal("\x1bOR", Event{ .key = Key{ .fun = 3 } });
+    try test_event_equal("\x1bOS", Event{ .key = Key{ .fun = 4 } });
+}
 
-    var i: usize = 0;
-    while (i < 3) : (i += 1) {
-        const key = try next(stdin.reader());
-        std.debug.print("\n\r{s}\n", .{key});
-    }
+test "high function keys" {
+    try test_event_equal("\x1b[15~", Event{ .key = Key{ .fun = 5 } });
+    try test_event_equal("\x1b[17~", Event{ .key = Key{ .fun = 6 } });
+    try test_event_equal("\x1b[18~", Event{ .key = Key{ .fun = 7 } });
+    try test_event_equal("\x1b[19~", Event{ .key = Key{ .fun = 8 } });
+    try test_event_equal("\x1b[20~", Event{ .key = Key{ .fun = 9 } });
+    try test_event_equal("\x1b[21~", Event{ .key = Key{ .fun = 10 } });
+    try test_event_equal("\x1b[23~", Event{ .key = Key{ .fun = 11 } });
+    try test_event_equal("\x1b[24~", Event{ .key = Key{ .fun = 12 } });
+}
+
+test "arrow keys" {
+    try test_event_equal("\x1b[A", Event{ .key = Key.up });
+    try test_event_equal("\x1b[B", Event{ .key = Key.down });
+    try test_event_equal("\x1b[C", Event{ .key = Key.right });
+    try test_event_equal("\x1b[D", Event{ .key = Key.left });
+}
+
+test "cursor position report" {
+    try test_event_equal("\x1b[19;24R", Event{ .key = Key{ .cursor = .{ .x = 24, .y = 19 } } });
+}
+
+test "normal characters" {
+    try test_event_equal("q", Event{ .key = Key{ .char = 'q' } });
+    try test_event_equal("😁", Event{ .key = Key{ .char = '😁' } });
 }
