@@ -93,88 +93,89 @@ pub const Key = union(enum) {
     rs,
     us,
     delete,
-
-    cursor: struct { x: i16, y: i16 },
 };
 
 /// Returns the next event received.
 /// If raw term is `.blocking` or term is canonical it will block until read at least one event.
 /// otherwise it will return `.none` if it didnt read any event
-pub fn next(in: anytype) !Event {
-    var buf: [20]u8 = undefined;
-    const c = try in.read(&buf);
-    if (c == 0) {
+pub fn next(buf: []const u8) !EventParseResult {
+    if (buf.len == 0) {
         return .none;
     }
-
-    const key = switch (buf[0]) {
+    return switch (buf[0]) {
         '\x1b' => {
+            if (buf.len == 1) {
+                return EventParseResult{ .event = .{ .bytes_read = 1, .event = Event{ .key = .escape } } };
+            }
             switch (buf[1]) {
                 // can be fn (1 - 4)
                 'O' => {
-                    return Event{ .key = Key{ .fun = (1 + buf[2] - 'P') } };
+                    if (buf.len == 2) {
+                        return .not_supported;
+                    }
+                    return EventParseResult{ .event = .{
+                        .bytes_read = 3,
+                        .event = Event{ .key = Key{ .fun = (buf[2] - 'O') } },
+                    } };
                 },
 
                 // csi
                 '[' => {
-                    return try parse_csi(buf[0..c]);
+                    return try parse_cs(buf[2..]);
                 },
-
-                else => {
-                    return Event{ .key = .escape };
-                },
+                else => return .not_supported,
             }
         },
         // ctrl arm + specials
-        '\x01'...'\x1A', '\x1C'...'\x1F', '\x7F' => Event{ .key = KeyMap.get(buf[0..c]).? },
+        '\x01'...'\x1A', '\x1C'...'\x1F', '\x7F' => EventParseResult{ .event = .{
+            .bytes_read = 1,
+            .event = Event{ .key = KeyMap.get(buf[0..1]).? },
+        } },
 
         // chars
-        else => Event{ .key = Key{ .char = try std.unicode.utf8Decode(buf[0..c]) } },
-    };
-
-    return key;
-}
-
-fn parse_csi(buf: []const u8) !Event {
-    // Cursor position report
-    if (buf[buf.len - 1] == 'R') {
-        var row_offset: usize = 2;
-        var row_length = try read_until(buf[row_offset..], ';');
-        var col_offset = row_offset + row_length + 1;
-        var col_length = try read_until(buf[col_offset..], 'R');
-
-        return Event{ .key = .{ .cursor = .{
-            .x = try std.fmt.parseInt(i16, buf[col_offset .. col_offset + col_length], 10),
-            .y = try std.fmt.parseInt(i16, buf[row_offset .. row_offset + row_length], 10),
-        } } };
-    }
-
-    // so we skip the first 2 chars (\x1b[)
-    switch (buf[2]) {
-        // keys
-        'A' => return Event{ .key = .up },
-        'B' => return Event{ .key = .down },
-        'C' => return Event{ .key = .right },
-        'D' => return Event{ .key = .left },
-
-        '1'...'2' => {
-            switch (buf[3]) {
-                '5' => return Event{ .key = Key{ .fun = 5 } },
-                '7' => return Event{ .key = Key{ .fun = 6 } },
-                '8' => return Event{ .key = Key{ .fun = 7 } },
-                '9' => return Event{ .key = Key{ .fun = 8 } },
-                '0' => return Event{ .key = Key{ .fun = 9 } },
-                '1' => return Event{ .key = Key{ .fun = 10 } },
-                '3' => return Event{ .key = Key{ .fun = 11 } },
-                '4' => return Event{ .key = Key{ .fun = 12 } },
-                else => {},
+        else => {
+            var len = try std.unicode.utf8ByteSequenceLength(buf[0]);
+            if (buf.len < len) {
+                return .incomplete;
+            } else {
+                return EventParseResult{ .event = .{
+                    .bytes_read = len,
+                    .event = Event{ .key = Key{ .char = try std.unicode.utf8Decode(buf[0..len]) } },
+                } };
             }
         },
+    };
+}
 
-        else => {},
+fn parse_cs(buf: []const u8) !EventParseResult {
+    if (buf.len == 0) {
+        return .incomplete;
     }
+    return switch (buf[0]) {
+        // keys
+        'A' => EventParseResult{ .event = .{ .event = Event{ .key = .up }, .bytes_read = 3 } },
+        'B' => EventParseResult{ .event = .{ .event = Event{ .key = .down }, .bytes_read = 3 } },
+        'C' => EventParseResult{ .event = .{ .event = Event{ .key = .right }, .bytes_read = 3 } },
+        'D' => EventParseResult{ .event = .{ .event = Event{ .key = .left }, .bytes_read = 3 } },
 
-    return .not_supported;
+        '1'...'2' => {
+            if (buf.len < 2) {
+                return .incomplete;
+            }
+            return switch (buf[1]) {
+                '5' => EventParseResult{ .event = .{ .event = Event{ .key = Key{ .fun = 5 } }, .bytes_read = 5 } },
+                '7' => EventParseResult{ .event = .{ .event = Event{ .key = Key{ .fun = 6 } }, .bytes_read = 5 } },
+                '8' => EventParseResult{ .event = .{ .event = Event{ .key = Key{ .fun = 7 } }, .bytes_read = 5 } },
+                '9' => EventParseResult{ .event = .{ .event = Event{ .key = Key{ .fun = 8 } }, .bytes_read = 5 } },
+                '0' => EventParseResult{ .event = .{ .event = Event{ .key = Key{ .fun = 9 } }, .bytes_read = 5 } },
+                '1' => EventParseResult{ .event = .{ .event = Event{ .key = Key{ .fun = 10 } }, .bytes_read = 5 } },
+                '3' => EventParseResult{ .event = .{ .event = Event{ .key = Key{ .fun = 11 } }, .bytes_read = 5 } },
+                '4' => EventParseResult{ .event = .{ .event = Event{ .key = Key{ .fun = 12 } }, .bytes_read = 5 } },
+                else => .not_supported,
+            };
+        },
+        else => .not_supported,
+    };
 }
 
 fn read_until(buf: []const u8, del: u8) !usize {
@@ -191,18 +192,28 @@ fn read_until(buf: []const u8, del: u8) !usize {
     return error.CantReadEvent;
 }
 
+pub const CursorLocation = struct {
+    row: usize,
+    col: usize,
+};
 pub const Event = union(enum) {
     key: Key,
-    resize,
-    mouse,
-    not_supported,
+    // cursor_report: CursorLocation,
+    // resize,
+    // mouse,
+};
+pub const EventParseResult = union(enum) {
     none,
+    not_supported,
+    incomplete,
+    event: struct {
+        bytes_read: usize,
+        event: Event,
+    },
 };
 
 fn test_event_equal(bytes: []const u8, expected: Event) !void {
-    var stream = std.io.fixedBufferStream(bytes);
-    var event = try next(stream.reader());
-    try std.testing.expectEqual(expected, event);
+    try std.testing.expectEqual(expected, (try next(bytes)).event.event);
 }
 
 test "ctrl keys" {
@@ -237,25 +248,26 @@ test "arrow keys" {
     try test_event_equal("\x1b[D", Event{ .key = Key.left });
 }
 
-test "cursor position report" {
-    try test_event_equal("\x1b[19;24R", Event{ .key = Key{ .cursor = .{ .x = 24, .y = 19 } } });
-}
-
 test "normal characters" {
     try test_event_equal("q", Event{ .key = Key{ .char = 'q' } });
     try test_event_equal("😁", Event{ .key = Key{ .char = '😁' } });
+}
+
+test "incompletes" {
+    // Utf8 incomplete code point
+    try std.testing.expectEqual(try next(&[_]u8{0b11000000}), .incomplete);
+    // Incomplete csi sequence
+    try std.testing.expectEqual(try next("\x1b["), .incomplete);
+    // incomplete prefix of a supported command sequence
+    try std.testing.expectEqual(try next("\x1b[1"), .incomplete);
+    // (compared to unsupported command sequences)
+    try std.testing.expectEqual(try next("\x1b[34~"), .not_supported);
 }
 
 // For example, pasting into the terminal
 // Or, maybe your program just doesn't read often enough
 // and the user typed multiple characters
 test "long text" {
-    var stream = std.io.fixedBufferStream("abcdefg");
-    var event = try next(stream.reader());
+    var event = (try next("abcdefg")).event.event;
     try std.testing.expectEqual(Event{ .key = Key{ .char = 'a' } }, event);
 }
-
-// For example, paste a large text block, then press f12, then paste another large text block.
-// If you're not calling read/next often enough, all that input will be in the queue. Then if
-// you read with a small buffer, you might read just the first half of the f12 control sequence.
-test "interrupted control sequence" {}
