@@ -245,3 +245,17 @@ test "normal characters" {
     try test_event_equal("q", Event{ .key = Key{ .char = 'q' } });
     try test_event_equal("😁", Event{ .key = Key{ .char = '😁' } });
 }
+
+// For example, pasting into the terminal
+// Or, maybe your program just doesn't read often enough
+// and the user typed multiple characters
+test "long text" {
+    var stream = std.io.fixedBufferStream("abcdefg");
+    var event = try next(stream.reader());
+    try std.testing.expectEqual(Event{ .key = Key{ .char = 'a' } }, event);
+}
+
+// For example, paste a large text block, then press f12, then paste another large text block.
+// If you're not calling read/next often enough, all that input will be in the queue. Then if
+// you read with a small buffer, you might read just the first half of the f12 control sequence.
+test "interrupted control sequence" {}
