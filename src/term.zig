@@ -81,10 +81,13 @@ pub const RawTerm = struct {
 
 // Doesn't work on all platforms, so you have `getSizeAsEvent`
 pub fn getSize() !TermSize {
+    return getSizeFd(0);
+}
+pub fn getSizeFd(fd: std.os.fd_t) !TermSize {
     var ws: winsize = undefined;
 
     // https://github.com/ziglang/zig/blob/master/lib/std/os/linux/errno/generic.zig
-    const err = std.os.linux.ioctl(0, os.system.T.IOCGWINSZ, @ptrToInt(&ws));
+    const err = std.os.linux.ioctl(fd, os.system.T.IOCGWINSZ, @ptrToInt(&ws));
     if (std.os.errno(err) != .SUCCESS) {
         return error.IoctlError;
     }
