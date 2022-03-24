@@ -1,3 +1,4 @@
+const builtin = @import("builtin");
 const std = @import("std");
 const os = std.os;
 const io = std.io;
@@ -86,8 +87,13 @@ pub fn getSize() !TermSize {
 pub fn getSizeFd(fd: std.os.fd_t) !TermSize {
     var ws: winsize = undefined;
 
+    const ioctl = switch (builtin.os.tag) {
+        .linux => std.os.linux.ioctl,
+        else => std.c.ioctl,
+    };
+
     // https://github.com/ziglang/zig/blob/master/lib/std/os/linux/errno/generic.zig
-    const err = std.os.linux.ioctl(fd, os.system.T.IOCGWINSZ, @ptrToInt(&ws));
+    const err = ioctl(fd, os.system.T.IOCGWINSZ, @ptrToInt(&ws));
     if (std.os.errno(err) != .SUCCESS) {
         return error.IoctlError;
     }
